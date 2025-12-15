@@ -3,3 +3,8 @@ numpy
 matplotlib
 seaborn
 datetime
+sklearn
+mflow
+pytest
+joblib
+os

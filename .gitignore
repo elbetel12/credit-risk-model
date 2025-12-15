@@ -9,6 +9,12 @@ data/
 models/
 mlruns/
 
+# MLflow
+mlflow.db
+mlflow.db-journal
+mlruns/
+mlartifacts/
+
 # Environment
 .env
 venv/
