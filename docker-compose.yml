@@ -1,17 +1,24 @@
+# docker-compose.yml
 version: '3.8'
 
 services:
   credit-risk-api:
     build: .
+    container_name: credit-risk-api
     ports:
       - "8000:8000"
-    environment:
-      - ENVIRONMENT=production
-      - LOG_LEVEL=INFO
-      - MODEL_PATH=/app/models/best_model.pkl
     volumes:
-      - ./data:/app/data
       - ./models:/app/models
+      - ./data:/app/data
+      - ./src:/app/src
+    environment:
+      - PORT=8000
+      - PYTHONPATH=/app
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    env_file:
+      - .env
+    depends_on:
+      - mlflow
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -19,19 +26,67 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
-  
+    networks:
+      - credit-risk-network
+    command: >
+      sh -c "uvicorn src.api.main:app --host 0.0.0.0 --port 8000"
+
   mlflow:
     image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow-tracking
     ports:
       - "5000:5000"
     environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
       - BACKEND_STORE_URI=sqlite:///mlflow.db
-      - DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
+      - ARTIFACT_ROOT=/mlflow-artifacts
     volumes:
-      - ./mlflow:/mlflow
+      - ./mlflow.db:/mlflow.db
+      - ./mlruns:/mlruns
+      - ./mlflow-artifacts:/mlflow-artifacts
     command: >
       mlflow server
       --backend-store-uri sqlite:///mlflow.db
-      --default-artifact-root /mlflow/artifacts
+      --default-artifact-root /mlflow-artifacts
       --host 0.0.0.0
       --port 5000
+    restart: unless-stopped
+    networks:
+      - credit-risk-network
+
+  # Optional: PostgreSQL for MLflow (more robust than SQLite)
+  # postgres:
+  #   image: postgres:13
+  #   container_name: mlflow-postgres
+  #   environment:
+  #     - POSTGRES_USER=mlflow
+  #     - POSTGRES_PASSWORD=mlflow
+  #     - POSTGRES_DB=mlflowdb
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+  #   networks:
+  #     - credit-risk-network
+
+  # Optional: Nginx reverse proxy
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: nginx-proxy
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf
+  #     - ./ssl:/etc/nginx/ssl
+  #   depends_on:
+  #     - credit-risk-api
+  #   networks:
+  #     - credit-risk-network
+
+networks:
+  credit-risk-network:
+    driver: bridge
+
+# volumes:
+#   postgres-data:

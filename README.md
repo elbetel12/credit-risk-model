@@ -181,8 +181,128 @@ Ensure all tests pass
 
 Submit a pull request
 
+
+# Task 6: Model Deployment and Continuous Integration
+
+## Overview
+This task packages the trained credit risk model into a containerized API and sets up a CI/CD pipeline for automated testing.
+
+## Structure
+src/api/
+├── main.py # FastAPI application
+├── pydantic_models.py # Request/response models
+Dockerfile # Container configuration
+docker-compose.yml # Multi-container setup
+.github/workflows/ci.yml # CI/CD pipeline
+
+## Setup
+
+### 1. Install dependencies
+```bash
+pip install -r requirements.txt
+
+2. Ensure model files exist
+Make sure you have:
+
+models/best_model.pkl - Trained model
+
+models/scaler.pkl - Feature scaler
+
+3. Run the API locally
+uvicorn src.api.main:app --reload
+4. Access the API
+API: http://localhost:8000
+
+Docs: http://localhost:8000/docs
+
+Health: http://localhost:8000/health
+
+Docker Deployment
+Build and run with Docker
+# Build the image
+docker build -t credit-risk-api .
+
+# Run the container
+docker run -p 8000:8000 credit-risk-api
+
+Using Docker Compose
+# Start all services
+docker-compose up
+
+# Start in background
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+API Endpoints
+Health Check
+GET /health 
+Returns API status and model information.
+Single Prediction
+POST /predict
+Predict credit risk for a single customer.
+Batch Prediction
+POST /predict/batch
+Predict credit risk for multiple customers.
+Available Features
+GET /features
+Get list of features expected by the model.
+
+CI/CD Pipeline
+The CI/CD pipeline runs on every push to main/master branch:
+
+Linting: Checks code style with flake8 and black
+
+Testing: Runs unit tests with pytest
+
+Building: Builds Docker image
+
+Deployment: Deploys to container registry (if on main branch)
+Testing
+Run tests locally
+bash
+pytest tests/ -v
+Run with coverage
+bash
+pytest tests/ -v --cov=src --cov-report=html
+Notes
+The API loads the model from models/best_model.pkl on startup
+
+Feature scaling is applied if models/scaler.pkl exists
+
+Default prediction threshold is 0.5 for high risk classification
+
+text
+
+## Summary
+
+You now have a complete Task 6 implementation with:
+
+1. ✅ **FastAPI application** with proper endpoints
+2. ✅ **Pydantic models** for request/response validation
+3. ✅ **Docker containerization** with Dockerfile
+4. ✅ **Multi-container setup** with docker-compose
+5. ✅ **CI/CD pipeline** with GitHub Actions
+6. ✅ **Unit tests** for API endpoints
+7. ✅ **Setup scripts** and documentation
+
+To run the complete setup:
+
+```bash
+# Make setup script executable
+chmod +x setup.sh
+
+# Run setup
+./setup.sh
+
+# Run the API
+docker-compose up
+The API will be available at http://localhost:8000 with interactive documentation at http://localhost:8000/docs
+
+
 📝 License
 This project is licensed under the MIT License.
 
-📧 Contact
-For questions or support, please contact your team lead or use the project's issue tracker.

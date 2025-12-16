@@ -136,44 +136,184 @@ def load_and_validate_data():
         logger.error(f"❌ Error loading data: {e}")
         return None
 
+def create_engineered_features(data):
+    """Create enhanced features including date-based features"""
+    logger.info("\n🔧 Creating engineered features...")
+    
+    # Make a copy to avoid modifying original
+    df = data.copy()
+    
+    # Ensure we have the required base columns
+    required_cols = ['total_amount', 'transaction_count', 'first_transaction', 'last_transaction']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    
+    if missing_cols:
+        logger.warning(f"⚠️ Missing columns for feature engineering: {missing_cols}")
+        logger.info("  Using available columns only")
+    
+    # Create basic monetary features (if they exist)
+    if 'total_amount' in df.columns:
+        # Already have total_amount
+        
+        # Create average amount per transaction
+        if 'transaction_count' in df.columns:
+            df['avg_amount'] = df['total_amount'] / df['transaction_count'].replace(0, 1)
+            logger.info("  Created: avg_amount")
+        
+        # Create transaction frequency (if we have time data)
+        if 'first_transaction' in df.columns and 'last_transaction' in df.columns:
+            # Calculate days between first and last transaction
+            df['transaction_period_days'] = df['last_transaction'] - df['first_transaction']
+            df['transaction_period_days'] = df['transaction_period_days'].clip(lower=1)  # Avoid division by zero
+            
+            # Create meaningful date-based features
+            df['days_since_first_transaction'] = df['first_transaction']
+            df['days_since_last_transaction'] = df['last_transaction']
+            
+            # Calculate transaction frequency (transactions per day)
+            df['transaction_frequency'] = df['transaction_count'] / df['transaction_period_days']
+            logger.info("  Created: transaction_frequency")
+            
+            # Customer tenure in weeks
+            df['customer_tenure_weeks'] = df['days_since_first_transaction'] / 7
+            logger.info("  Created: customer_tenure_weeks")
+            
+            # Recent activity indicator (active in last 30 days)
+            df['active_recently'] = (df['days_since_last_transaction'] <= 30).astype(int)
+            logger.info("  Created: active_recently")
+            
+            # Inactivity ratio (days between transactions)
+            df['avg_days_between_transactions'] = df['transaction_period_days'] / df['transaction_count'].replace(0, 1)
+            logger.info("  Created: avg_days_between_transactions")
+    
+    # Create amount-based features
+    if 'total_amount' in df.columns:
+        # Log transform for skewed amounts
+        df['log_total_amount'] = np.log1p(df['total_amount'])
+        logger.info("  Created: log_total_amount")
+        
+        # Amount categories
+        df['amount_category'] = pd.cut(df['total_amount'], 
+                                      bins=[-np.inf, 100, 500, 2000, np.inf],
+                                      labels=['very_low', 'low', 'medium', 'high'])
+        
+        # Convert to numerical (one-hot would be better but keeping simple)
+        df['amount_category_code'] = df['amount_category'].cat.codes
+        logger.info("  Created: amount_category_code")
+    
+    # Create transaction count features
+    if 'transaction_count' in df.columns:
+        # Log transform
+        df['log_transaction_count'] = np.log1p(df['transaction_count'])
+        logger.info("  Created: log_transaction_count")
+        
+        # Transaction count categories
+        df['tx_count_category'] = pd.cut(df['transaction_count'],
+                                        bins=[-np.inf, 5, 20, 50, np.inf],
+                                        labels=['few', 'moderate', 'many', 'very_many'])
+        df['tx_count_category_code'] = df['tx_count_category'].cat.codes
+        logger.info("  Created: tx_count_category_code")
+    
+    # Create interaction features
+    if 'total_amount' in df.columns and 'transaction_count' in df.columns:
+        df['avg_txn_size'] = df['total_amount'] / df['transaction_count'].replace(0, 1)
+        logger.info("  Created: avg_txn_size")
+        
+        # Monetary value per day if we have time data
+        if 'transaction_period_days' in df.columns:
+            df['monetary_per_day'] = df['total_amount'] / df['transaction_period_days']
+            logger.info("  Created: monetary_per_day")
+    
+    # Drop categorical columns that we encoded
+    cols_to_drop = ['amount_category', 'tx_count_category', 'transaction_period_days']
+    for col in cols_to_drop:
+        if col in df.columns:
+            df = df.drop(col, axis=1)
+    
+    logger.info(f"  Original features: {list(data.columns)}")
+    logger.info(f"  Engineered features added. New shape: {df.shape}")
+    
+    return df
+
 def prepare_data(data):
-    """Prepare data for training"""
-    logger.info("\n🔧 Preparing data...")
+    """Prepare data for training with feature selection"""
+    logger.info("\n🔧 Preparing data for training...")
+    
+    # Create engineered features
+    data_engineered = create_engineered_features(data)
+    
+    # Select final features for modeling
+    # Prioritize these features based on domain knowledge
+    preferred_features = [
+        # Core monetary features
+        'total_amount', 'avg_amount', 'log_total_amount',
+        
+        # Transaction features
+        'transaction_count', 'log_transaction_count', 'avg_txn_size',
+        
+        # Date-based features (CRITICAL for credit risk)
+        'days_since_last_transaction', 'days_since_first_transaction',
+        'transaction_frequency', 'avg_days_between_transactions',
+        'active_recently', 'customer_tenure_weeks',
+        
+        # Derived features
+        'monetary_per_day', 'amount_category_code', 'tx_count_category_code'
+    ]
+    
+    # Filter to only include features that exist in our data
+    available_features = [f for f in preferred_features if f in data_engineered.columns]
+    
+    # Add CustomerId and target for splitting
+    if 'CustomerId' not in data_engineered.columns:
+        logger.error("❌ CustomerId column missing")
+        return None
     
     # Separate features and target
-    X = data.drop(['CustomerId', 'is_high_risk'], axis=1, errors='ignore')
-    y = data['is_high_risk']
+    X = data_engineered[available_features].copy()
+    y = data_engineered['is_high_risk']
     
-    logger.info(f"  Features: {X.shape}")
+    logger.info(f"  Selected {len(available_features)} features for modeling:")
+    for i, feat in enumerate(available_features, 1):
+        logger.info(f"    {i:2d}. {feat}")
     
     # Handle any remaining non-numeric columns
     non_numeric_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
     if non_numeric_cols:
         logger.warning(f"⚠️ Non-numeric columns found: {non_numeric_cols}")
-        
         for col in non_numeric_cols:
             try:
-                # Try to convert to numeric
                 X[col] = pd.to_numeric(X[col], errors='coerce')
                 logger.info(f"  Converted {col} to numeric")
             except:
-                # Drop if can't convert
                 X = X.drop(col, axis=1)
                 logger.info(f"  Dropped {col}")
     
-    # Check for NaN values
+    # Handle missing values
     nan_count = X.isnull().sum().sum()
     if nan_count > 0:
         logger.info(f"  Found {nan_count} NaN values in features")
-        # Fill with median (better than mean for skewed data)
+        
+        # Check which columns have missing values
+        nan_columns = X.columns[X.isnull().any()].tolist()
+        logger.info(f"  Columns with NaN: {nan_columns}")
+        
+        # Fill with median (better for skewed data)
         for col in X.columns:
             if X[col].isnull().sum() > 0:
                 median_val = X[col].median()
                 X[col] = X[col].fillna(median_val)
-        logger.info(f"  Filled NaN values with median")
+                logger.info(f"  Filled NaN in {col} with median: {median_val:.4f}")
     
-    # Save feature names for later
+    # Save feature names for later use (CRITICAL for API)
     feature_names = X.columns.tolist()
+    
+    # Log feature statistics
+    logger.info("\n📊 Feature Statistics:")
+    for feat in feature_names[:10]:  # Show first 10
+        logger.info(f"  {feat:30s} mean: {X[feat].mean():8.2f} std: {X[feat].std():8.2f}")
+    
+    if len(feature_names) > 10:
+        logger.info(f"  ... and {len(feature_names) - 10} more features")
     
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(
@@ -184,8 +324,8 @@ def prepare_data(data):
     )
     
     logger.info(f"\n📊 Data Split:")
-    logger.info(f"  Training: {X_train.shape[0]:,} samples")
-    logger.info(f"  Testing:  {X_test.shape[0]:,} samples")
+    logger.info(f"  Training: {X_train.shape[0]:,} samples, {X_train.shape[1]} features")
+    logger.info(f"  Testing:  {X_test.shape[0]:,} samples, {X_test.shape[1]} features")
     
     # Scale features
     scaler = StandardScaler()
@@ -196,13 +336,31 @@ def prepare_data(data):
     X_train_scaled_df = pd.DataFrame(X_train_scaled, columns=feature_names)
     X_test_scaled_df = pd.DataFrame(X_test_scaled, columns=feature_names)
     
-    # Save scaler
+    # Save scaler and feature names
     joblib.dump(scaler, 'models/scaler.pkl')
+    
+    # Save feature names for API to use
+    feature_info = {
+        'feature_names': feature_names,
+        'feature_importances': {}  # Will be filled after training
+    }
+    joblib.dump(feature_info, 'models/feature_info.pkl')
+    
     logger.info("✓ Scaler saved: models/scaler.pkl")
+    logger.info("✓ Feature info saved: models/feature_info.pkl")
+    
+    # Log feature names to file for reference
+    with open('data/processed/model_features.txt', 'w') as f:
+        f.write("Features used in model training:\n")
+        f.write("=" * 50 + "\n")
+        for i, feat in enumerate(feature_names, 1):
+            f.write(f"{i:3d}. {feat}\n")
+    
+    logger.info("✓ Feature list saved: data/processed/model_features.txt")
     
     return X_train_scaled_df, X_test_scaled_df, y_train, y_test, feature_names
 
-def train_model_with_mlflow(model_name, model, X_train, y_train, X_test, y_test, run_name="model_training"):
+def train_model_with_mlflow(model_name, model, X_train, y_train, X_test, y_test, feature_names, run_name="model_training"):
     """Train a single model with MLflow tracking"""
     logger.info(f"\n🎯 Training {model_name} with MLflow...")
     
@@ -218,10 +376,16 @@ def train_model_with_mlflow(model_name, model, X_train, y_train, X_test, y_test,
                 mlflow.log_param("model_type", "RandomForestClassifier")
                 mlflow.log_param("n_estimators", 100)
                 mlflow.log_param("random_state", 42)
+                mlflow.log_param("max_depth", "None")
             elif model_name == 'Gradient Boosting':
                 mlflow.log_param("model_type", "GradientBoostingClassifier")
                 mlflow.log_param("n_estimators", 100)
                 mlflow.log_param("learning_rate", 0.1)
+                mlflow.log_param("max_depth", 3)
+            
+            # Log feature information
+            mlflow.log_param("n_features", len(feature_names))
+            mlflow.log_param("features", ", ".join(feature_names[:10]))  # Log first 10
             
             # Create a pipeline with imputer for models that don't handle NaN
             if model_name in ['Logistic Regression', 'Gradient Boosting']:
@@ -257,6 +421,26 @@ def train_model_with_mlflow(model_name, model, X_train, y_train, X_test, y_test,
             for metric_name, metric_value in metrics.items():
                 mlflow.log_metric(metric_name, metric_value)
             
+            # Calculate and log feature importance for tree-based models
+            if model_name in ['Random Forest', 'Gradient Boosting']:
+                if hasattr(trained_model, 'feature_importances_'):
+                    importances = trained_model.feature_importances_
+                    importance_df = pd.DataFrame({
+                        'feature': feature_names,
+                        'importance': importances
+                    }).sort_values('importance', ascending=False)
+                    
+                    # Log top 10 features
+                    top_features = importance_df.head(10)
+                    logger.info(f"\n🔝 Top 10 Important Features for {model_name}:")
+                    for idx, row in top_features.iterrows():
+                        logger.info(f"  {row['feature']:30s}: {row['importance']:.4f}")
+                    
+                    # Save feature importance
+                    importance_path = f"data/processed/feature_importance_{model_name.lower().replace(' ', '_')}.csv"
+                    importance_df.to_csv(importance_path, index=False)
+                    mlflow.log_artifact(importance_path)
+            
             # Log model to MLflow with signature
             signature = infer_signature(X_train, y_pred)
             mlflow.sklearn.log_model(
@@ -272,7 +456,6 @@ def train_model_with_mlflow(model_name, model, X_train, y_train, X_test, y_test,
                                 index=['Actual Low Risk', 'Actual High Risk'],
                                 columns=['Predicted Low Risk', 'Predicted High Risk'])
             
-            # Save confusion matrix as CSV
             cm_path = f"data/processed/confusion_matrix_{model_name.lower().replace(' ', '_')}.csv"
             cm_df.to_csv(cm_path)
             mlflow.log_artifact(cm_path)
@@ -284,7 +467,8 @@ def train_model_with_mlflow(model_name, model, X_train, y_train, X_test, y_test,
             return {
                 'model': trained_model,
                 'metrics': metrics,
-                'name': model_name
+                'name': model_name,
+                'feature_names': feature_names
             }
             
         except Exception as e:
@@ -293,7 +477,7 @@ def train_model_with_mlflow(model_name, model, X_train, y_train, X_test, y_test,
             logger.error(traceback.format_exc())
             return None
 
-def train_all_models_with_mlflow(X_train, X_test, y_train, y_test):
+def train_all_models_with_mlflow(X_train, X_test, y_train, y_test, feature_names):
     """Train all models with MLflow tracking"""
     logger.info("\n" + "="*60)
     logger.info("TRAINING MODELS WITH MLFLOW")
@@ -303,11 +487,11 @@ def train_all_models_with_mlflow(X_train, X_test, y_train, y_test):
     models_to_train = [
         {
             'name': 'Logistic Regression',
-            'model': LogisticRegression(random_state=42, max_iter=1000, C=1.0),
+            'model': LogisticRegression(random_state=42, max_iter=1000, C=1.0, class_weight='balanced'),
         },
         {
             'name': 'Random Forest',
-            'model': RandomForestClassifier(random_state=42, n_estimators=100),
+            'model': RandomForestClassifier(random_state=42, n_estimators=100, class_weight='balanced'),
         },
         {
             'name': 'Gradient Boosting',
@@ -321,7 +505,8 @@ def train_all_models_with_mlflow(X_train, X_test, y_train, y_test):
         result = train_model_with_mlflow(
             model_config['name'],
             model_config['model'],
-            X_train, y_train, X_test, y_test
+            X_train, y_train, X_test, y_test,
+            feature_names
         )
         
         if result:
@@ -348,7 +533,8 @@ def compare_models(results):
             'Accuracy': result['metrics']['accuracy'],
             'Precision': result['metrics']['precision'],
             'Recall': result['metrics']['recall'],
-            'F1-Score': result['metrics']['f1']
+            'F1-Score': result['metrics']['f1'],
+            'Num_Features': len(result['feature_names'])
         }
         comparison_data.append(row)
     
@@ -366,15 +552,24 @@ def compare_models(results):
     
     logger.info(f"\n🏆 BEST MODEL: {best_model_name}")
     logger.info(f"   ROC-AUC: {best_result['metrics']['roc_auc']:.4f}")
+    logger.info(f"   Features used: {len(best_result['feature_names'])}")
     
-    # Save best model locally as well
+    # Save best model locally
     try:
         joblib.dump(best_result['model'], 'models/best_model.pkl')
-        logger.info("✓ Best model saved locally: models/best_model.pkl")
+        logger.info("✓ Best model saved: models/best_model.pkl")
         
-        # Log best model metrics to a new MLflow run
+        # Update feature info with importances if available
+        feature_info = joblib.load('models/feature_info.pkl')
+        if hasattr(best_result['model'], 'feature_importances_'):
+            feature_info['feature_importances'] = best_result['model'].feature_importances_.tolist()
+        joblib.dump(feature_info, 'models/feature_info.pkl')
+        
+        # Log best model metrics to MLflow
         with mlflow.start_run(run_name="best_model_summary"):
             mlflow.log_param("best_model", best_model_name)
+            mlflow.log_param("best_model_features", len(best_result['feature_names']))
+            
             for metric_name, metric_value in best_result['metrics'].items():
                 mlflow.log_metric(f"best_{metric_name}", metric_value)
             
@@ -382,6 +577,17 @@ def compare_models(results):
             comparison_path = "data/processed/model_comparison.csv"
             comparison_df.to_csv(comparison_path, index=False)
             mlflow.log_artifact(comparison_path)
+            
+            # Log feature list
+            features_path = "data/processed/best_model_features.txt"
+            with open(features_path, 'w') as f:
+                f.write(f"Best Model: {best_model_name}\n")
+                f.write(f"ROC-AUC: {best_result['metrics']['roc_auc']:.4f}\n")
+                f.write("\nFeatures:\n")
+                f.write("="*50 + "\n")
+                for i, feat in enumerate(best_result['feature_names'], 1):
+                    f.write(f"{i:3d}. {feat}\n")
+            mlflow.log_artifact(features_path)
             
     except Exception as e:
         logger.error(f"❌ Failed to save model: {e}")
@@ -393,25 +599,25 @@ def create_simple_visualization(results, X_test, y_test, comparison_df):
     logger.info("\n📈 Creating visualization...")
     
     try:
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
         
-        # Plot 1: Model comparison
+        # Plot 1: Model comparison (top-left)
         models = comparison_df['Model'].values
         roc_scores = comparison_df['ROC-AUC'].values
         
         colors = ['#3498db', '#2ecc71', '#e74c3c']
-        bars = axes[0].bar(models, roc_scores, color=colors, edgecolor='black')
-        axes[0].set_ylabel('ROC-AUC Score', fontsize=12)
-        axes[0].set_title('Model Performance Comparison', fontsize=14, fontweight='bold')
-        axes[0].set_ylim(0, 1)
-        axes[0].grid(True, alpha=0.3, axis='y')
+        bars = axes[0, 0].bar(models, roc_scores, color=colors, edgecolor='black')
+        axes[0, 0].set_ylabel('ROC-AUC Score', fontsize=12)
+        axes[0, 0].set_title('Model Performance Comparison', fontsize=14, fontweight='bold')
+        axes[0, 0].set_ylim(0, 1)
+        axes[0, 0].grid(True, alpha=0.3, axis='y')
         
         # Add values on bars
         for bar, score in zip(bars, roc_scores):
-            axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
-                        f'{score:.3f}', ha='center', va='bottom', fontweight='bold')
+            axes[0, 0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                          f'{score:.3f}', ha='center', va='bottom', fontweight='bold')
         
-        # Plot 2: ROC curve for best model
+        # Plot 2: ROC curve for best model (top-right)
         best_model_name = comparison_df.iloc[0]['Model']
         best_model = results[best_model_name]['model']
         
@@ -424,13 +630,50 @@ def create_simple_visualization(results, X_test, y_test, comparison_df):
         fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
         roc_auc = auc(fpr, tpr)
         
-        axes[1].plot(fpr, tpr, color='darkorange', lw=2, label=f'{best_model_name} (AUC = {roc_auc:.3f})')
-        axes[1].plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random')
-        axes[1].set_xlabel('False Positive Rate', fontsize=12)
-        axes[1].set_ylabel('True Positive Rate', fontsize=12)
-        axes[1].set_title(f'ROC Curve - {best_model_name}', fontsize=14, fontweight='bold')
-        axes[1].legend(loc='lower right')
-        axes[1].grid(True, alpha=0.3)
+        axes[0, 1].plot(fpr, tpr, color='darkorange', lw=2, label=f'{best_model_name} (AUC = {roc_auc:.3f})')
+        axes[0, 1].plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random')
+        axes[0, 1].set_xlabel('False Positive Rate', fontsize=12)
+        axes[0, 1].set_ylabel('True Positive Rate', fontsize=12)
+        axes[0, 1].set_title(f'ROC Curve - {best_model_name}', fontsize=14, fontweight='bold')
+        axes[0, 1].legend(loc='lower right')
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # Plot 3: Feature importance for best model if available (bottom-left)
+        if best_model_name in ['Random Forest', 'Gradient Boosting']:
+            if hasattr(best_model, 'feature_importances_'):
+                feature_names = results[best_model_name]['feature_names']
+                importances = best_model.feature_importances_
+                
+                # Get top 10 features
+                indices = np.argsort(importances)[-10:][::-1]
+                top_features = [feature_names[i] for i in indices]
+                top_importances = importances[indices]
+                
+                colors_bar = plt.cm.viridis(np.linspace(0.3, 0.9, len(top_features)))
+                axes[1, 0].barh(range(len(top_features)), top_importances, color=colors_bar, edgecolor='black')
+                axes[1, 0].set_yticks(range(len(top_features)))
+                axes[1, 0].set_yticklabels(top_features)
+                axes[1, 0].set_xlabel('Importance', fontsize=12)
+                axes[1, 0].set_title(f'Top 10 Feature Importance - {best_model_name}', fontsize=14, fontweight='bold')
+                axes[1, 0].grid(True, alpha=0.3, axis='x')
+        
+        # Plot 4: Metrics comparison (bottom-right)
+        metrics_to_plot = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+        x_pos = np.arange(len(models))
+        width = 0.2
+        
+        for i, metric in enumerate(metrics_to_plot):
+            values = comparison_df[metric].values
+            axes[1, 1].bar(x_pos + i*width, values, width, label=metric, alpha=0.8)
+        
+        axes[1, 1].set_xlabel('Models', fontsize=12)
+        axes[1, 1].set_ylabel('Score', fontsize=12)
+        axes[1, 1].set_title('Model Metrics Comparison', fontsize=14, fontweight='bold')
+        axes[1, 1].set_xticks(x_pos + width*1.5)
+        axes[1, 1].set_xticklabels(models)
+        axes[1, 1].legend(loc='upper right')
+        axes[1, 1].grid(True, alpha=0.3, axis='y')
+        axes[1, 1].set_ylim(0, 1)
         
         plt.tight_layout()
         plt.savefig('data/processed/model_evaluation.png', dpi=150, bbox_inches='tight')
@@ -456,11 +699,11 @@ def main():
     if data is None:
         return
     
-    # Step 2: Prepare data
+    # Step 2: Prepare data with engineered features
     X_train, X_test, y_train, y_test, feature_names = prepare_data(data)
     
     # Step 3: Train models with MLflow
-    results = train_all_models_with_mlflow(X_train, X_test, y_train, y_test)
+    results = train_all_models_with_mlflow(X_train, X_test, y_train, y_test, feature_names)
     
     if not results:
         logger.error("❌ No models were trained successfully")
@@ -485,6 +728,16 @@ def main():
     print(f"  ROC-AUC:    {comparison_df.iloc[0]['ROC-AUC']:.4f}")
     print(f"  Accuracy:   {comparison_df.iloc[0]['Accuracy']:.4f}")
     print(f"  F1-Score:   {comparison_df.iloc[0]['F1-Score']:.4f}")
+    print(f"  Features:   {comparison_df.iloc[0]['Num_Features']}")
+    
+    print(f"\nFeature Categories:")
+    date_features = [f for f in feature_names if 'day' in f or 'recent' in f or 'tenure' in f]
+    amount_features = [f for f in feature_names if 'amount' in f or 'monetary' in f]
+    transaction_features = [f for f in feature_names if 'transaction' in f and 'amount' not in f]
+    
+    print(f"  Date-based:    {len(date_features)} features")
+    print(f"  Amount-based:  {len(amount_features)} features")
+    print(f"  Transaction:   {len(transaction_features)} features")
     
     print(f"\nMLflow Information:")
     print(f"  Database: sqlite:///mlflow.db")
@@ -494,14 +747,17 @@ def main():
     print(f"\nTo view results:")
     print(f"  1. Start MLflow UI: mlflow ui --backend-store-uri sqlite:///mlflow.db")
     print(f"  2. Open browser: http://localhost:5000")
-    print(f"  3. Click on 'Credit_Risk_Modeling' experiment")
-    print(f"  4. View runs and models under each run")
+    
+    print(f"\nFor API deployment (Task 6):")
+    print(f"  Features expected: {len(feature_names)}")
+    print(f"  See: data/processed/model_features.txt for complete list")
     
     print(f"\nLocal files created:")
     print(f"  1. models/best_model.pkl - Best trained model")
     print(f"  2. models/scaler.pkl - Feature scaler")
-    print(f"  3. data/processed/model_evaluation.png - Performance chart")
-    print(f"  4. data/processed/model_comparison.csv - Comparison table")
+    print(f"  3. models/feature_info.pkl - Feature metadata")
+    print(f"  4. data/processed/model_evaluation.png - Performance chart")
+    print(f"  5. data/processed/model_features.txt - Feature list")
 
 if __name__ == "__main__":
     main()
