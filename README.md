@@ -36,8 +36,24 @@ The Basel II Accord emphasizes three pillars: minimum capital requirements, supe
 
 # Credit Risk Model - Bati Bank BNPL Service
 
+![CI](https://github.com/elbetel12/credit-risk-model/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.9-blue.svg)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.104.1-green.svg)
+![Status](https://img.shields.io/badge/Status-Interim_2-orange.svg)
+
 ## 📋 Project Overview
-An end-to-end credit scoring system for Bati Bank's Buy-Now-Pay-Later service, using eCommerce transaction data to predict customer credit risk.
+An end-to-end production-ready credit scoring system for Bati Bank's Buy-Now-Pay-Later (BNPL) service. This project implements a full machine learning pipeline from data engineering to a containerized API deployment with CI/CD integration.
+
+### Interim Submission 2 Progress (Tonight's Deadline)
+| Task | Status | Completion |
+| :--- | :---: | :---: |
+| Feature Engineering (RFM + Time) | ✅ | 100% |
+| Model Training (Random Forest) | ✅ | 100% |
+| SHAP Explainability | ✅ | 100% |
+| FastAPI Endpoint Implementation | ✅ | 100% |
+| Unit Testing (10/10 tests) | ✅ | 100% |
+| CI/CD Pipeline (GitHub Actions) | ✅ | 100% |
+| Streamlit Dashboard MVP | 🔄 | 80% |
 
 ## 🚀 Quick Start
 
