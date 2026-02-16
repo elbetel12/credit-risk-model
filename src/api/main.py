@@ -25,6 +25,9 @@ from .pydantic_models import (
     PredictionRequest, PredictionResponse, HealthResponse,
     BatchPredictionRequest, BatchPredictionResponse
 )
+from .simplified_models import (
+    SimplifiedPredictionRequest, SimplifiedPredictionResponse
+)
 
 # Configure logging
 logging.basicConfig(
@@ -104,7 +107,8 @@ def load_model():
         else:
             logger.warning("Scaler not found, using model without scaling")
         
-        logger.info(f"✓ Model loaded: {type(model).__name__}")
+        model_type = type(model).__name__
+        logger.info(f"✓ Model loaded: {model_type}")
         logger.info(f"✓ Expected features: {len(feature_names)}")
         logger.info(f"✓ Scaler loaded: {scaler is not None}")
         
@@ -318,6 +322,120 @@ async def predict(request: PredictionRequest):
             detail=f"Internal server error: {str(e)}"
         )
     
+
+@app.post("/predict/simple", response_model=SimplifiedPredictionResponse, tags=["Predictions"])
+async def predict_simple(request: SimplifiedPredictionRequest):
+    """
+    Simplified prediction endpoint for dashboard with user-friendly features.
+    Accepts: recency, frequency, monetary_volatility, avg_amount, weekend_ratio
+    Returns: risk_score, category, credit_limit, etc.
+    """
+    try:
+        # Check if model is loaded
+        if model is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Model not loaded"
+            )
+        
+        logger.info(f"Received simplified prediction request for: {request.customer_id}")
+        
+        # Convert simplified features to model-expected format
+        # We'll create realistic transaction-based features from the simplified inputs
+        
+        # Estimate transaction count from monthly frequency
+        # Assume customer has been active for ~6 months on average
+        estimated_months = 6
+        transaction_count = int(request.frequency * estimated_months)
+        transaction_count = max(transaction_count, 1)  # At least 1 transaction
+        
+        # Calculate total amount from average and count
+        total_amount = request.avg_amount * transaction_count
+        
+        # Use recency directly as days_since_last_transaction
+        days_since_last_transaction = request.recency
+        
+        # Estimate days_since_first_transaction (tenure)
+        # If very recent, tenure is short; if not recent, tenure is longer
+        days_since_first_transaction = max(180, days_since_last_transaction + (estimated_months * 30))
+        
+        # Create PredictionRequest with estimated features
+        traditional_request = PredictionRequest(
+            CustomerId=request.customer_id,
+            total_amount=total_amount,
+            transaction_count=transaction_count,
+            days_since_last_transaction=days_since_last_transaction,
+            days_since_first_transaction=days_since_first_transaction,
+            avg_amount=request.avg_amount
+        )
+        
+        # Preprocess features using existing function
+        features = preprocess_features(traditional_request)
+        
+        # Make prediction
+        if hasattr(model, 'predict_proba'):
+            probs = model.predict_proba(features)
+            probability = probs[0][1] if isinstance(probs, (list, np.ndarray)) and len(probs) > 0 else 0.5
+        elif hasattr(model, 'predict'):
+            prediction = model.predict(features)
+            probability = float(prediction[0]) if isinstance(prediction, (list, np.ndarray)) else float(prediction)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Model cannot make predictions"
+            )
+        
+        # Determine risk category
+        category = get_risk_category(float(probability))
+        
+        # Calculate credit limit based on risk score
+        # Lower risk = higher credit limit
+        base_limit = request.avg_amount * 10  # Base: 10x average transaction
+        
+        if probability < 0.3:  # Low risk
+            credit_limit = base_limit * 1.5
+        elif probability < 0.7:  # Medium risk
+            credit_limit = base_limit * 1.0
+        else:  # High risk
+            credit_limit = base_limit * 0.5
+        
+        # Cap credit limit between reasonable bounds
+        credit_limit = max(50000, min(credit_limit, 5000000))  # 50K to 5M UGX
+        
+        # Calculate interest rate (higher risk = higher rate)
+        # Range: 8% (low risk) to 25% (high risk)
+        base_rate = 8.0
+        risk_premium = probability * 17.0  # 0-17% risk premium
+        interest_rate = base_rate + risk_premium
+        
+        # Calculate expected loss
+        # Expected Loss = PD × Exposure × LGD
+        # Assuming Loss Given Default (LGD) = 50%
+        lgd = 0.5
+        expected_loss = probability * credit_limit * lgd
+        
+        # Create response
+        response = SimplifiedPredictionResponse(
+            customer_id=request.customer_id,
+            risk_score=float(probability),
+            category=category,
+            credit_limit=float(credit_limit),
+            pd=float(probability),
+            interest_rate=float(interest_rate),
+            expected_loss=float(expected_loss)
+        )
+        
+        logger.info(f"Simplified prediction successful: {category} risk ({probability:.2%})")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in /predict/simple: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
 
 @app.post("/predict/batch", response_model=BatchPredictionResponse, tags=["Predictions"])
 async def predict_batch(request: BatchPredictionRequest):
