@@ -7,12 +7,13 @@ from unittest.mock import MagicMock, patch
 # Add parent directory to path to import src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import the app
-# We might need to mock things before importing if the import triggers loading
-with patch('src.api.main.load_model', return_value=True):
-    from src.api.main import app
-
-client = TestClient(app)
+@pytest.fixture
+def client():
+    """Create a test client for the API"""
+    # Import inside fixture to avoid collection-time issues
+    with patch('src.api.main.load_model', return_value=True):
+        from src.api.main import app
+        return TestClient(app)
 
 @pytest.fixture
 def mock_model():
@@ -24,7 +25,7 @@ def mock_model():
         mock.predict.return_value = np.array([0])
         yield mock
 
-def test_predict_missing_fields(mock_model):
+def test_predict_missing_fields(client, mock_model):
     """Test /predict endpoint with missing fields"""
     # Missing 'total_amount' and 'transaction_count'
     payload = {
@@ -35,7 +36,7 @@ def test_predict_missing_fields(mock_model):
     response = client.post("/predict", json=payload)
     assert response.status_code == 422  # Unprocessable Entity
 
-def test_predict_negative_values(mock_model):
+def test_predict_negative_values(client, mock_model):
     """Test with negative values for recency/frequency"""
     # Note: Pydantic might not block negative unless specified, 
     # but the API logic or model might handle it.
@@ -52,7 +53,7 @@ def test_predict_negative_values(mock_model):
     response = client.post("/predict", json=payload)
     assert response.status_code in [200, 422, 400]
 
-def test_predict_extremely_large_values(mock_model):
+def test_predict_extremely_large_values(client, mock_model):
     """Test with extremely large values"""
     payload = {
         "CustomerId": "CUST001",
@@ -64,7 +65,7 @@ def test_predict_extremely_large_values(mock_model):
     response = client.post("/predict", json=payload)
     assert response.status_code == 200
 
-def test_predict_wrong_data_types(mock_model):
+def test_predict_wrong_data_types(client, mock_model):
     """Test with wrong data types (strings instead of numbers)"""
     payload = {
         "CustomerId": "CUST001",
@@ -76,7 +77,7 @@ def test_predict_wrong_data_types(mock_model):
     response = client.post("/predict", json=payload)
     assert response.status_code == 422
 
-def test_api_status_codes(mock_model):
+def test_api_status_codes(client, mock_model):
     """Test that API returns appropriate status codes"""
     # Health check
     response = client.get("/health")
