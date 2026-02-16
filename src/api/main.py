@@ -55,7 +55,14 @@ app.add_middleware(
 model = None
 scaler = None
 model_type = None
-model_features = None
+feature_names = [
+    'total_amount', 'avg_amount', 'log_total_amount',
+    'transaction_count', 'log_transaction_count', 'avg_txn_size',
+    'days_since_last_transaction', 'days_since_first_transaction',
+    'transaction_frequency', 'avg_days_between_transactions',
+    'active_recently', 'customer_tenure_weeks',
+    'monetary_per_day', 'amount_category_code', 'tx_count_category_code'
+]
 
 
 
@@ -121,10 +128,10 @@ def preprocess_features(data: PredictionRequest) -> np.ndarray:
     # OPTIONAL FIELDS - use if provided, otherwise calculate
     # Monetary features
     features['avg_amount'] = data.avg_amount if data.avg_amount is not None else data.total_amount / max(1, data.transaction_count)
-    features['log_total_amount'] = data.log_total_amount if data.log_total_amount is not None else np.log1p(data.total_amount)
+    features['log_total_amount'] = data.log_total_amount if data.log_total_amount is not None else np.log1p(max(0, data.total_amount))
     
     # Transaction features
-    features['log_transaction_count'] = data.log_transaction_count if data.log_transaction_count is not None else np.log1p(data.transaction_count)
+    features['log_transaction_count'] = data.log_transaction_count if data.log_transaction_count is not None else np.log1p(max(0, data.transaction_count))
     features['avg_txn_size'] = data.avg_txn_size if data.avg_txn_size is not None else data.total_amount / max(1, data.transaction_count)
     
     # Date-based features
@@ -202,9 +209,19 @@ def get_risk_category(probability: float) -> str:
 async def startup_event():
     """Load model on startup"""
     logger.info("🚀 Starting Credit Risk Prediction API...")
+    logger.info(f"Current directory: {os.getcwd()}")
+    
+    if os.path.exists('models'):
+        logger.info(f"Files in models/: {os.listdir('models')}")
+    else:
+        logger.warning("Models directory NOT found!")
+    
     success = load_model()
     if not success:
         logger.error("Failed to load model on startup")
+    else:
+        logger.info("✅ Model loaded successfully on startup")
+
 
 @app.get("/", tags=["Root"])
 async def root():
@@ -226,23 +243,6 @@ async def health_check():
         model_type=model_type if model_loaded else None,
         version="1.0.0"
     )
-
-@app.on_event("startup")
-async def startup_event():
-    """Load model on startup"""
-    logger.info("🚀 Starting Credit Risk Prediction API...")
-    logger.info(f"Current directory: {os.getcwd()}")
-    logger.info(f"Models directory exists: {os.path.exists('models')}")
-    
-    if os.path.exists('models'):
-        logger.info(f"Files in models/: {os.listdir('models')}")
-    
-    success = load_model()
-    if not success:
-        logger.error("Failed to load model on startup")
-    else:
-        logger.info("✅ Model loaded successfully on startup")
-
 
 
 @app.post("/predict", response_model=PredictionResponse, tags=["Predictions"])
@@ -272,11 +272,13 @@ async def predict(request: PredictionRequest):
             logger.info("Making prediction...")
             if hasattr(model, 'predict_proba'):
                 logger.info("Using predict_proba method")
-                probability = model.predict_proba(features)[0, 1]
+                probs = model.predict_proba(features)
+                # Use robust indexing that works for both numpy arrays and lists
+                probability = probs[0][1] if isinstance(probs, (list, np.ndarray)) and len(probs) > 0 else 0.5
             elif hasattr(model, 'predict'):
                 logger.info("Using predict method")
-                prediction = model.predict(features)[0]
-                probability = float(prediction)
+                prediction = model.predict(features)
+                probability = float(prediction[0]) if isinstance(prediction, (list, np.ndarray)) else float(prediction)
             else:
                 logger.error("Model has no predict or predict_proba method!")
                 raise HTTPException(
@@ -338,9 +340,11 @@ async def predict_batch(request: BatchPredictionRequest):
                 
                 # Make prediction
                 if hasattr(model, 'predict_proba'):
-                    probability = model.predict_proba(features)[0, 1]
+                    probs = model.predict_proba(features)
+                    probability = probs[0][1] if isinstance(probs, (list, np.ndarray)) and len(probs) > 0 else 0.5
                 else:
-                    probability = model.predict_proba(features)[0, 1]
+                    prediction = model.predict(features)
+                    probability = float(prediction[0]) if isinstance(prediction, (list, np.ndarray)) else float(prediction)
                 
                 is_high_risk = probability >= 0.5
                 if is_high_risk:
@@ -385,7 +389,7 @@ async def predict_batch(request: BatchPredictionRequest):
 async def get_features():
     """Get expected features for prediction"""
     return {
-        "expected_features": EXPECTED_FEATURES,
+        "expected_features": feature_names,
         "description": "Features expected by the model for prediction"
     }
 

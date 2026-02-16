@@ -18,7 +18,6 @@ def test_basic():
     assert proba.shape == (len(y_test), 2)
     
     print("All basic tests passed")
-    return True
 
 if __name__ == "__main__":
     test_basic()
